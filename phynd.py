@@ -3,6 +3,7 @@ import sys
 import os
 from os.path import expanduser
 import glob
+import subprocess
 import configparser
 import threading
 import tkinter as tk
@@ -89,15 +90,14 @@ class inputDialog(tk.Toplevel):
 
         self.parent = parent
         self.dirlist = dirlist
-        #self.transient(self.parent)
+        self.matchingDirs = None
 
-        #self.title("Phynd")
-        #self.overrideredirect(True)
+        self.title("Phynd")
         self.attributes("-topmost", True)
-        #self.wm_attributes('-type', 'splash')
         self.attributes('-type', 'dock')
         self.result = None
 
+        self.update_idletasks()
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
         # we want the popup window to be comfortably large
@@ -111,43 +111,38 @@ class inputDialog(tk.Toplevel):
             screen_width * 0.5 - window_width/2,
             screen_height * 0.3 - window_height/2
         ))
+        self.update_idletasks()
 
         myfont = tkfont.Font(family='Helvetica', size=12)
 
         self.inputVar = tk.StringVar()
-
         self.inputEntry = tk.Entry(
             self,
             font=myfont,
             textvariable=self.inputVar,
         )
         self.inputVar.trace_add("write", self._inputChanged)
-
         self.inputEntry.pack(fill='x', padx=10, pady=10)
 
-        self.Results = tk.Listbox(
+        self.ResultsLB = tk.Listbox(
             self,
             font=myfont,
             height=round(window_height*0.8),
+            selectmode=tk.SINGLE,
         )
-        self.Results.pack(fill='x', padx=10, pady=10)
-
+        self.ResultsLB.pack(fill='x', padx=10, pady=10)
+        self.ResultsLB.bind('<Double-Button-1>', self._onResultSelected)
+        self.ResultsLB.bind('<Return>', self._onResultSelected)
         self.bind("<Control-q>", self._quit)
-        self.bind("<Control-Shift-h>", self._abort)
-        #self.bind("<Return>", self._yes)
-        #self.bind("<Control-h>", self._abort)
         self.bind("<Escape>", self._abort)
-        #self.protocol("WM_DELETE_WINDOW", self._abort)
 
-        #self.grab_set()
         self.focus_force()
-        #self.update_idletasks()
         self.inputEntry.focus_set()
         self.wait_window(self)
         
     def _inputChanged(self, *args):
         filteredDirs = self._filterByInput()
-        self._showOutput(filteredDirs)
+        self._showOutput()
         
     def _filterByInput(self):
         dirl = self.dirlist
@@ -159,12 +154,16 @@ class inputDialog(tk.Toplevel):
             else:
                 Idx = orgNames.str.find(wrd) != -1
             dirl = dirl[Idx]
-        return dirl['Name'].values
+        self.matchingDirs = dirl['Name'].values
 
-    def _showOutput(self, dirl):
-        self.Results.delete(0, tk.END)
-        for item in dirl:
-            self.Results.insert(tk.END, item)
+    def _showOutput(self):
+        self.ResultsLB.delete(0, tk.END)
+        for item in self.matchingDirs:
+            self.ResultsLB.insert(tk.END, item)
+
+    def _onResultSelected(self, *args):
+        self.result = self.matchingDirs[self.ResultsLB.curselection()]
+        self._returntoparent()
 
     def _quit(self, *args):
         self.result = "###I###WANT###YOU###TO###GO###KILL###YOURSELF###"
@@ -181,14 +180,12 @@ class inputDialog(tk.Toplevel):
         
 class myapp(tk.Tk):
     def __init__(self, ScriptPath=None):
-        # do what any TK app does
         super().__init__()
 
         self.Cfg = Configuration()
 
         self.attributes('-type', 'dock')
         self.geometry("0x0+0+0")
-        #self.withdraw()
 
         self.hk = SystemHotkey()
         self.hk.register(('control', 'shift', 'h'), callback=self.showhide)
@@ -211,12 +208,17 @@ class myapp(tk.Tk):
             self.update_idletasks()
             self.doingInput = True
             self.hk.unregister(('control', 'shift', 'h'))
-            foo = inputDialog(self, self.allDirs)
-            if foo.result == "###I###WANT###YOU###TO###GO###KILL###YOURSELF###":
-                self.exitProgram()
+            inputResult = inputDialog(self, self.allDirs).result
             self.hk.register(('control', 'shift', 'h'), callback=self.showhide)
             self.doingInput = False
-
+        if not inputResult:
+            return
+        if inputResult == "###I###WANT###YOU###TO###GO###KILL###YOURSELF###":
+            self.exitProgram()
+            return
+        #subprocess.run("/usr/bin/konsole &", shell=True, cwd=inputResult)
+        subprocess.run('xdg-open "%s" &' % (inputResult), shell=True)
+         
     def writeAllDirsToFile(self):
         if not os.path.isdir(self.Cfg.get('csvdir')):
             os.mkdir(self.Cfg.get('csvdir'))
