@@ -1,16 +1,19 @@
 #!/usr/bin/python3
-import sys
-import os
-from os.path import expanduser
-import glob
-import subprocess
+"""Modal find windows that matches by parts of the path."""
 import configparser
+import os
+import subprocess
+import sys
 import threading
 import tkinter as tk
+from Typing import Any, List, Tuple
 from tkinter import font as tkfont
+from pathlib import Path
+
 import pandas as pd
 from system_hotkey import SystemHotkey
 
+MIN_NB_CHARS = 3
 # logic:
 # create a window
 # hide it
@@ -24,105 +27,114 @@ from system_hotkey import SystemHotkey
 # when the thread finishes update the list and overwrite the file
 
 
-class Configuration():
-    ' Object that can initialise, change and inform about App configuration'
-    def __init__(self):
-        # The path of the appdata and ini file
-        ConfigPath = os.path.join(
-            os.environ.get('APPDATA') or
-            os.environ.get('XDG_CONFIG_HOME') or
-            os.path.join(os.environ['HOME'], '.config'),
-            "phynd"
+def _parse_str_tuple(input_str: str) -> Tuple[str]:
+    return tuple(k.strip('\'\" ') for k in input_str[1:-1].split(","))
+
+def _parse_str_list(input_str: str) -> List[str]:
+    return [k.strip('\'\" ') for k in input_str[1:-1].split(",")]
+
+class Configuration:
+    """Object that can initialise, change and inform about App configuration."""
+
+    def __init__(self: object) -> None:
+        """Set the path of the appdata and ini file."""
+        config_path = Path.joinpath(
+            os.environ.get("APPDATA")
+            or os.environ.get("XDG_CONFIG_HOME")
+            or Path.joinpath(os.environ["HOME"], ".config"),
+            "phynd",
         )
-        self.IniPath = os.path.join(ConfigPath, 'phynd.ini')
+        self.ini_path = Path(config_path, "phynd.ini")
 
         # dict to store all settings
         self.ConfigurationDict = {}
-        self.set('cmdlinearguments',sys.argv[1:])
-        self.set('csvdir',ConfigPath)
-        self.set('csvname','phynd.csv.xz')
-        self._setDefaultConfiguration()
-        self._readConfiguration()
+        self.set("cmdlinearguments", sys.argv[1:])
+        self.set("csvdir", config_path)
+        self.set("csvname", "phynd.csv.xz")
+        self._set_default_configuration()
+        self._read_configuration()
 
-    def _setDefaultConfiguration(self):
-        'Default configuration parameters'
-        self.set('topdir',expanduser("~"))
-        self.set('hotket',('control', 'shift', 'h'))
+    def _set_default_configuration(self: object) -> None:
+        """Set default configuration parameters."""
+        self.set("topdir", Path.expanduser("~"))
+        self.set("savesettings", value=True)
+        self.set("hotkey", ("control", "shift", "h"))
+        self.set("exclude", [])
 
-    def _readConfiguration(self):
-        '''Function to get configurable parameters from Phynd.ini.'''
-        config = configparser.ConfigParser()
-        if config.read(self.IniPath):
-            default = config['phynd']
-            topdir = default.get('topdir', expanduser("~"))
-            hotkey = default.get('hotkey', ('control', 'shift', 'h'))
+    def _read_configuration(self: object) -> None:
+        """Get configurable parameters from Phynd.ini."""
+        config = configparser.ConfigParser(
+            converters={"stringtuple": _parse_str_tuple, "stringlist": _parse_str_list})
+        if config.read(self.ini_path):
+            default = config["phynd"]
+            topdir = default.get("topdir", self.get("topdir"))
+            hotkey = default.getstringtuple("hotkey", self.get("hotkey"))
+            exclude = default.getstringlist("exclude", self.get("exclude"))
             # store read values in ConfigurationDict
-            self.set('topdir',topdir)
-            self.set('hotkey',hotkey)
+            self.set("topdir", topdir)
+            self.set("hotkey", hotkey)
+            self.set("exclude", exclude)
 
-    def writeConfiguration(self):
-        'save configuration info'
-
+    def write_configuration(self: object) -> None:
+        """Save configuration info."""
         # save settings disabled
-        if not self.ConfigurationDict['savesettings']:
+        if not self.get("savesettings"):
             return
 
         config = configparser.ConfigParser()
-        config['phynd'] = {
-            'topdir':self.get('topdir'),
-            'hotkey':self.get('hotkey'),
+        config["phynd"] = {
+            "topdir":self.get("topdir"),
+            "hotkey":self.get("hotkey"),
+            "exclude":self.get("exclude"),
         }
-        with open(self.IniPath, 'w') as configfile:
+        with Path.open(self.ini_path, "w") as configfile:
             config.write(configfile)
 
-    def get(self, parameter):
-        'Return one value of the configuration'
+    def get(self: object, parameter: str) -> Any:
+        """Return one value of the configuration."""
         if parameter in self.ConfigurationDict:
             return self.ConfigurationDict[parameter]
+        return None
 
-    def set(self, param, value):
-        'Add/Change a configuration parameter'
+    def set(self: object, param: str, value: Any) -> None:
+        """Add/Change a configuration parameter."""
         self.ConfigurationDict[param] = value
 
-class inputDialog(tk.Toplevel):
-    def __init__(self, parent, dirlist):
+class InputDialog(tk.Toplevel):
+    """Modal input window."""
+
+    def __init__(self: object, parent: object, dirlist: pd.DataFrame) -> None:
+        """Set defaults for class."""
         super().__init__()
 
         self.parent = parent
         self.dirlist = dirlist
-        self.matchingDirs = None
-
-        self.title("Phynd")
-        self.attributes("-topmost", True)
-        self.attributes('-type', 'dock')
+        self.matchingDirs = []
         self.result = None
 
-        self.update_idletasks()
+        self.title("Phynd")
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
         # we want the popup window to be comfortably large
         # and a bit near the top of the screen
         window_width  = screen_width * 0.5
         window_height = screen_height * 0.3
-
-        self.geometry('%dx%d+%d+%d' % (
+        self.geometry("%dx%d+%d+%d" % (
             window_width,
             window_height,
             screen_width * 0.5 - window_width/2,
-            screen_height * 0.3 - window_height/2
+            screen_height * 0.3 - window_height/2,
         ))
-        self.update_idletasks()
 
-        myfont = tkfont.Font(family='Helvetica', size=12)
-
+        myfont = tkfont.Font(family="Helvetica", size=12)
         self.inputVar = tk.StringVar()
         self.inputEntry = tk.Entry(
             self,
             font=myfont,
             textvariable=self.inputVar,
         )
-        self.inputVar.trace_add("write", self._inputChanged)
-        self.inputEntry.pack(fill='x', padx=10, pady=10)
+        self.inputVar.trace_add("write", self._input_changed)
+        self.inputEntry.pack(fill="x", padx=10, pady=10)
 
         self.ResultsLB = tk.Listbox(
             self,
@@ -130,119 +142,131 @@ class inputDialog(tk.Toplevel):
             height=round(window_height*0.8),
             selectmode=tk.SINGLE,
         )
-        self.ResultsLB.pack(fill='x', padx=10, pady=10)
-        self.ResultsLB.bind('<Double-Button-1>', self._onResultSelected)
-        self.ResultsLB.bind('<Return>', self._onResultSelected)
+        self.ResultsLB.pack(fill="x", padx=10, pady=10)
+        self.ResultsLB.bind("<Double-Button-1>", self._on_result_selected)
+        self.ResultsLB.bind("<Return>", self._on_result_selected)
         self.bind("<Control-q>", self._quit)
         self.bind("<Escape>", self._abort)
 
+        self.attributes("-topmost", value=True)
         self.focus_force()
         self.inputEntry.focus_set()
         self.wait_window(self)
-        
-    def _inputChanged(self, *args):
-        filteredDirs = self._filterByInput()
-        self._showOutput()
-        
-    def _filterByInput(self):
+
+    def _input_changed(self: object, *_: Any) -> None:
+        self._filter_by_input()
+        self._show_output()
+
+    def _filter_by_input(self: object) -> None:
+        # only start searching after a few letters have been entered
+        if len(self.inputVar.get()) < MIN_NB_CHARS:
+            return
         dirl = self.dirlist
         for wrd in self.inputVar.get().split():
-            orgNames = dirl['Name']
-            lowNames = dirl['Name'].str.lower()
             if wrd.islower():
-                Idx = lowNames.str.find(wrd) != -1
+                idx = dirl["Name"].str.lower().str.find(wrd) != -1
             else:
-                Idx = orgNames.str.find(wrd) != -1
-            dirl = dirl[Idx]
-        self.matchingDirs = dirl['Name'].values
+                idx = dirl["Name"].str.find(wrd) != -1
+            dirl = dirl[idx]
+        self.matchingDirs = list(dirl["Name"])
 
-    def _showOutput(self):
+    def _show_output(self: object) -> None:
         self.ResultsLB.delete(0, tk.END)
         for item in self.matchingDirs:
             self.ResultsLB.insert(tk.END, item)
 
-    def _onResultSelected(self, *args):
+    def _on_result_selected(self: object, *_: Any) -> None:
         self.result = self.matchingDirs[self.ResultsLB.curselection()]
-        self._returntoparent()
+        self._return_to_parent()
 
-    def _quit(self, *args):
+    def _quit(self: object, *_: Any) -> None:
         self.result = "###I###WANT###YOU###TO###GO###KILL###YOURSELF###"
-        self._returntoparent()
-        
-    def _abort(self, *args):
+        self._return_to_parent()
+
+    def _abort(self: object, *_: Any) -> None:
         self.result = ""
-        self._returntoparent()
-        
-    def _returntoparent(self):
+        self._return_to_parent()
+
+    def _return_to_parent(self: object) -> None:
         self.withdraw()
         self.update_idletasks()
         self.destroy()
-        
-class myapp(tk.Tk):
-    def __init__(self, ScriptPath=None):
+
+class MyApp(tk.Tk):
+    """The main application class of phynd."""
+
+    def __init__(self: object) -> None:
+        """Set the defaults for phynd."""
         super().__init__()
 
         self.Cfg = Configuration()
 
-        self.attributes('-type', 'dock')
+        self.attributes("-type", "dock")
         self.geometry("0x0+0+0")
 
         self.hk = SystemHotkey()
-        self.hk.register(('control', 'shift', 'h'), callback=self.showhide)
+        self.hk.register(self.Cfg.get("hotkey"), callback=self._show_hide)
         self.doingInput = False
         self.allDirs = None
 
-        self.readAllDirsFromFile()
+        self._read_all_dirs_from_file()
 
-        dirFindThread = threading.Thread(target=self.updateAllDirs)
-        dirFindThread.daemon = True
-        dirFindThread.start()
+        dir_find_thread = threading.Thread(target=self._update_all_dirs)
+        dir_find_thread.daemon = True
+        dir_find_thread.start()
 
-    def exitProgram(self, *args):
+    def _exit_program(self: object, *_: Any) -> None:
+        self.Cfg.write_configuration()
         self.quit()
 
-    def showhide(self, *args):
+    def _show_hide(self: object, *_: Any) -> None:
         if self.allDirs is None:
             return
         if not self.doingInput:
             self.update_idletasks()
             self.doingInput = True
-            self.hk.unregister(('control', 'shift', 'h'))
-            inputResult = inputDialog(self, self.allDirs).result
-            self.hk.register(('control', 'shift', 'h'), callback=self.showhide)
+            self.hk.unregister(self.Cfg.get("hotkey"))
+            input_result = InputDialog(self, self.allDirs).result
+            self.hk.register(self.Cfg.get("hotkey"), callback=self._show_hide)
             self.doingInput = False
-        if not inputResult:
+        if not input_result:
             return
-        if inputResult == "###I###WANT###YOU###TO###GO###KILL###YOURSELF###":
-            self.exitProgram()
+        if input_result == "###I###WANT###YOU###TO###GO###KILL###YOURSELF###":
+            self._exit_program()
             return
-        #subprocess.run("/usr/bin/konsole &", shell=True, cwd=inputResult)
-        subprocess.run('xdg-open "%s" &' % (inputResult), shell=True)
-         
-    def writeAllDirsToFile(self):
-        if not os.path.isdir(self.Cfg.get('csvdir')):
-            os.mkdir(self.Cfg.get('csvdir'))
+        subprocess.run("/usr/bin/konsole &", shell=True, cwd=input_result)
+
+    def _write_all_dirs_to_file(self: object) -> None:
+        if not Path.is_dir(self.Cfg.get("csvdir")):
+            Path.mkdir(self.Cfg.get("csvdir"))
         self.allDirs.to_csv(
-            os.path.join(self.Cfg.get('csvdir'), self.Cfg.get('csvname')),
-            columns=['Name'],
+            Path.joinpath(self.Cfg.get("csvdir"), self.Cfg.get("csvname")),
+            columns=["Name"],
         )
-        
-    def readAllDirsFromFile(self):
-        csvfile = os.path.join(self.Cfg.get('csvdir'), self.Cfg.get('csvname'))
-        if os.path.isfile(csvfile):
+
+    def _read_all_dirs_from_file(self: object) -> None:
+        csvfile = Path.joinpath(self.Cfg.get("csvdir"), self.Cfg.get("csvname"))
+        if Path.is_file(csvfile):
             self.allDirs = pd.read_csv(csvfile)
-        
-    def updateAllDirs(self):
+
+    def _update_all_dirs(self: object) -> None:
         dirl = []
-        for root, dirs, files in os.walk(self.Cfg.get('topdir')):
-            dirs[:] = [d for d in dirs if not d.startswith('.')]
-            dirl.extend([os.path.join(root, dir) for dir in dirs])
-        #dirl = [x for x, _, _ in os.walk()]
-        self.allDirs = pd.DataFrame(columns=['Name'], data=dirl)
-        self.writeAllDirsToFile()
-        
-def main():
-    app = myapp()
+        excludes = self.Cfg.get("exclude")
+        for root, dirs, _ in os.walk(self.Cfg.get("topdir")):
+            dirs[:] = [
+                d
+                for d in dirs
+                if not (d.startswith(".") or Path.joinpath(root, d) in excludes)
+            ]
+            dirl.extend([
+                Path.joinpath(root, directory) for directory in dirs
+            ])
+        self.allDirs = pd.DataFrame(columns=["Name"], data=dirl)
+        self._write_all_dirs_to_file()
+
+def main() -> None:
+    """Start the application and wait for user input."""
+    app = MyApp()
     app.mainloop()
 
 if __name__ == "__main__":
